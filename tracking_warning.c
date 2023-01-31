@@ -1,18 +1,17 @@
 /**
-* @par Copyright (C): 2010-2019, Shenzhen Yahboom Tech
-* @file         tracking.c
-* @author       Danny
+* @file         tracking_warning.c
 * @version      V1.0
-* @date         2017.08.16
-* @brief        巡线实验
+* @date         2023/1/1
+* @brief        perform lane following and warning while obstructure detected
 * @details
-* @par History  见如下说明
-*
 */
 #include <wiringPi.h>
 #include <softPwm.h>
+#include <sys/time.h>
+#include <stdio.h>
+#include <stdlib.h>
 
-//定义引脚
+// define motor pins
 int Left_motor_go = 28;       //左电机前进AIN2连接Raspberry的wiringPi编码28口
 int Left_motor_back = 29;     //左电机后退AIN1连接Raspberry的wiringPi编码29口
 
@@ -23,6 +22,8 @@ int Left_motor_pwm = 27;      //左电机控速PWMA连接Raspberry的wiringPi编
 int Right_motor_pwm = 23;     //右电机控速PWMB连接Raspberry的wiringPi编码23口
 
 int key = 10;                 //定义按键为Raspberry的wiringPi编码10口
+int EchoPin = 30;             //定义回声脚为连接Raspberry的wiringPi编码30口
+int TrigPin = 31;             //定义触发脚为连接Raspberry的wiringPi编码31口
 
 //循迹红外引脚定义
 //TrackSensorLeftPin1 TrackSensorLeftPin2 TrackSensorRightPin1 TrackSensorRightPin2
@@ -32,12 +33,19 @@ const int TrackSensorLeftPin2  =  21;  //定义左边第二个循迹红外传感
 const int TrackSensorRightPin1 =  7;   //定义右边第一个循迹红外传感器引脚为wiringPi编码7口
 const int TrackSensorRightPin2 =  1;   //定义右边第二个循迹红外传感器引脚为wiringPi编码1口
 
+const int AvoidSensorLeft =  26; //定义左边避障的红外传感器引脚为wiringPi编码26口
+const int AvoidSensorRight = 0;  //定义右边避障的红外传感器引脚为wiringPi编码0口
+
 //定义各个循迹红外引脚采集的数据的变量
 int TrackSensorLeftValue1;
 int TrackSensorLeftValue2;
 int TrackSensorRightValue1;
 int TrackSensorRightValue2;
+//infrared sensor variables
 
+int LeftSensorValue ;            //定义变量来保存红外传感器采集的数据大小
+int RightSensorValue ;
+//ultra
 /**
 * Function       run
 * @author        Danny
@@ -227,6 +235,143 @@ void key_scan()
   }
 }
 
+float Distance()
+{
+	float distance;
+	struct timeval tv1;
+	struct timeval tv2;
+	struct timeval tv3;
+	struct timeval tv4;
+	long start, stop;
+	
+	digitalWrite(TrigPin, LOW);
+	delayMicroseconds(2);
+	digitalWrite(TrigPin, HIGH);      //向Trig脚输入至少10US的高电平
+	delayMicroseconds(15);
+	digitalWrite(TrigPin, LOW);
+    
+	//防止程序未检测到电平变化，陷入死循环，加入一个超时重测机制
+    gettimeofday(&tv3, NULL);        //超时重测机制开始计时
+	start = tv3.tv_sec * 1000000 + tv3.tv_usec;
+	while(!digitalRead(EchoPin) == 1)
+	{
+		gettimeofday(&tv4, NULL);    //超时重测机制结束计时
+		stop = tv4.tv_sec * 1000000 + tv4.tv_usec;
+		
+		if ((stop - start) > 30000)  //最大测5米时的时间值：10/340=0.03s
+		{
+			return -1;               //超时返回-1
+		}
+	} 
+	
+	//防止程序未检测到电平变化，陷入死循环，加入一个超时重测机制
+	gettimeofday(&tv1, NULL);      //当echo脚电平变高时开始计时
+    start = tv1.tv_sec*1000000+tv1.tv_usec;
+	while(!digitalRead(EchoPin) == 0)
+	{
+		gettimeofday(&tv3,NULL);   //超时重测机制开始计时
+		stop = tv3.tv_sec*1000000+tv3.tv_usec;
+		if ((stop - start) > 30000)
+		{
+			return -1;
+		}
+	}                              //超时重测机制结束计时
+	gettimeofday(&tv2, NULL);      //当echo脚电平变低时结束计时
+
+	start = tv1.tv_sec * 1000000 + tv1.tv_usec;
+	stop = tv2.tv_sec * 1000000 + tv2.tv_usec;
+
+	distance = (float)(stop - start)/1000000 * 34000 / 2;
+	return distance;
+}
+
+
+/**
+* Function       bubble
+* @author        Danny
+* @date          2017.08.16
+* @brief         超声波测五次的数据进行冒泡排序
+* @param[in1]    a:超声波数组首地址
+* @param[in2]    n:超声波数组大小
+* @param[out]    void
+* @retval        void
+* @par History   无
+*/
+void bubble(unsigned long *a, int n)
+
+{
+  int i, j, temp;
+  for (i = 0; i < n - 1; i++)
+  {
+    for (j = i + 1; j < n; j++)
+    {
+      if (a[i] > a[j])
+      {
+        temp = a[i];
+        a[i] = a[j];
+        a[j] = temp;
+      }
+    }
+  }
+}
+
+
+/**
+* Function       Distane_test
+* @author        Danny
+* @date          2017.08.16
+* @brief         超声波测五次，去掉最大值,最小值,
+*                取平均值,提高测试准确性
+* @param[in]     void
+* @param[out]    void
+* @retval        float:distance返回距离值
+* @par History   无
+*/
+
+float Distance_test()
+{
+  float distance;
+  unsigned long ultrasonic[5] = {0};
+  int num = 0;
+  while (num < 5)
+  {
+     distance = Distance();
+	 //超时返回-1，重新测试
+	 while((int)distance == -1)
+	 {
+		 distance = Distance();
+	 }
+    //过滤掉测试距离中出现的错误数据大于500
+    while ( (int)distance >= 500 || (int)distance == 0)
+    {
+         distance = Distance();
+    }
+    ultrasonic[num] = distance;
+    num++;
+	delay(10);
+  }
+  num = 0;
+  bubble(ultrasonic, 5);
+  distance = (ultrasonic[1] + ultrasonic[2] + ultrasonic[3]) / 3;
+  
+  printf("distance:%f\n",distance);      //打印测试的距离
+  return distance;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /**
 * Function       main
 * @author        Danny
@@ -237,11 +382,15 @@ void key_scan()
 * @retval        void
 * @par History   无
 */
+
+
+
 void main()
 {
   //wiringPi初始化
   wiringPiSetup();
-	
+	float distance;
+  int mode_switching;
   //初始化电机驱动IO口为输出方式
   pinMode(Left_motor_go, OUTPUT);
   pinMode(Left_motor_back, OUTPUT);
@@ -255,6 +404,10 @@ void main()
   //定义按键接口为输入接口
   pinMode(key, INPUT);
 
+  //初始化超声波引脚
+  pinMode(EchoPin, INPUT);    //定义超声波输入脚
+  pinMode(TrigPin, OUTPUT);   //定义超声波输出脚
+  
   //定义四路循迹红外传感器为输入接口
   pinMode(TrackSensorLeftPin1, INPUT);
   pinMode(TrackSensorLeftPin2, INPUT);
@@ -266,6 +419,36 @@ void main()
   
   while(1)
   {
+    
+    distance = Distance_test();
+    if(distance < 15){
+      printf("Approaching obstructre, distance %f", distance);
+      brake(1);
+
+      // read information from infrared module
+      LeftSensorValue  = digitalRead(AvoidSensorLeft);
+      RightSensorValue = digitalRead(AvoidSensorRight);
+      if (LeftSensorValue == HIGH && RightSensorValue == LOW){
+        printf("Obstructure on the right");
+      } else if (LeftSensorValue == LOW && RightSensorValue == HIGH){
+        printf("Obstructure on the left");
+      } else if (RightSensorValue == LOW && LeftSensorValue == LOW) {
+        printf("Obstructure on both sides ");
+      } 
+
+
+
+
+      
+      // Mode Switching
+      printf("Please determine whether you would like to control manually (1/0)");
+      scanf("%d", &mode_switching);
+      if(mode_switching){
+         //**PS2_Control();
+      }
+    } else if (distance < 50 && distance > 15){
+      printf("An obstructure is approaching soon, please decide");
+    }
    //检测到黑线时循迹模块相应的指示灯亮，端口电平为LOW
    //未检测到黑线时循迹模块相应的指示灯灭，端口电平为HIGH
    TrackSensorLeftValue1  = digitalRead(TrackSensorLeftPin1);
